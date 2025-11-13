@@ -26,7 +26,7 @@ class ReviewService:
         """
         Create a review for an activity.
 
-        Calls: activity.sp_create_review()
+        Calls: activity.sp_create_activity_review()
 
         Args:
             activity_id: Activity ID
@@ -39,7 +39,7 @@ class ReviewService:
         try:
             rows = await self.db.fetch_all(
                 """
-                SELECT * FROM activity.sp_create_review(
+                SELECT * FROM activity.sp_create_activity_review(
                     p_activity_id := $1,
                     p_reviewer_user_id := $2,
                     p_rating := $3,
@@ -74,7 +74,7 @@ class ReviewService:
         """
         List reviews for an activity.
 
-        Calls: activity.sp_list_reviews()
+        Calls: activity.sp_get_activity_reviews()
 
         Args:
             activity_id: Activity ID
@@ -88,7 +88,7 @@ class ReviewService:
         try:
             rows = await self.db.fetch_all(
                 """
-                SELECT * FROM activity.sp_list_reviews(
+                SELECT * FROM activity.sp_get_activity_reviews(
                     p_activity_id := $1,
                     p_requesting_user_id := $2,
                     p_limit := $3,

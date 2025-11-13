@@ -24,7 +24,7 @@ class ParticipantService:
         """
         List all participants of an activity.
 
-        Calls: activity.sp_list_participants()
+        Calls: activity.sp_get_activity_participants()
 
         Args:
             activity_id: Activity ID
@@ -36,7 +36,7 @@ class ParticipantService:
         try:
             rows = await self.db.fetch_all(
                 """
-                SELECT * FROM activity.sp_list_participants(
+                SELECT * FROM activity.sp_get_activity_participants(
                     p_activity_id := $1,
                     p_requesting_user_id := $2
                 )
@@ -85,7 +85,7 @@ class ParticipantService:
         """
         Get waitlist for an activity.
 
-        Calls: activity.sp_get_waitlist()
+        Calls: activity.sp_get_activity_waitlist()
 
         Args:
             activity_id: Activity ID
@@ -97,7 +97,7 @@ class ParticipantService:
         try:
             rows = await self.db.fetch_all(
                 """
-                SELECT * FROM activity.sp_get_waitlist(
+                SELECT * FROM activity.sp_get_activity_waitlist(
                     p_activity_id := $1,
                     p_requesting_user_id := $2
                 )

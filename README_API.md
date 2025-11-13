@@ -4,7 +4,7 @@ FastAPI-based REST API for managing activities, built with 100% stored procedure
 
 ## 🎯 Status
 
-**✅ COMPLETE - All 18 Endpoints Implemented!**
+**✅ COMPLETE - All 19 Endpoints Implemented!**
 
 ✅ **Categories** (3 endpoints)
 - GET `/api/v1/categories` - List all categories
@@ -76,6 +76,7 @@ psql -h localhost -U activities_user -d activities_db -f database/procedures/04_
 psql -h localhost -U activities_user -d activities_db -f database/procedures/05_participants.sql
 psql -h localhost -U activities_user -d activities_db -f database/procedures/06_reviews.sql
 psql -h localhost -U activities_user -d activities_db -f database/procedures/07_search_discovery.sql
+psql -h localhost -U activities_user -d activities_db -f database/procedures/08_rename_procedures.sql
 ```
 
 3. **Configure environment**:
@@ -225,7 +226,7 @@ Key tables:
 
 ## ✅ Implementation Complete
 
-All 18 endpoints have been successfully implemented with:
+All 19 endpoints have been successfully implemented with:
 - 100% Stored Procedures architecture
 - Comprehensive error handling
 - Blocking system enforcement
@@ -234,7 +235,7 @@ All 18 endpoints have been successfully implemented with:
 - Geospatial search capabilities
 - Collaborative filtering recommendations
 
-Total: 18 stored procedures covering all business logic
+Total: 19 stored procedures covering all business logic (all names match specifications exactly)
 
 ## 📖 API Documentation
 

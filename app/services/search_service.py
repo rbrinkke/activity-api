@@ -128,7 +128,7 @@ class SearchService:
         try:
             rows = await self.db.fetch_all(
                 """
-                SELECT * FROM activity.sp_nearby_activities(
+                SELECT * FROM activity.sp_get_nearby_activities(
                     p_user_id := $1,
                     p_latitude := $2,
                     p_longitude := $3,
@@ -206,7 +206,7 @@ class SearchService:
         try:
             rows = await self.db.fetch_all(
                 """
-                SELECT * FROM activity.sp_personalized_feed(
+                SELECT * FROM activity.sp_get_activity_feed(
                     p_user_id := $1,
                     p_limit := $2
                 )
@@ -266,7 +266,7 @@ class SearchService:
         try:
             rows = await self.db.fetch_all(
                 """
-                SELECT * FROM activity.sp_recommendations(
+                SELECT * FROM activity.sp_get_recommended_activities(
                     p_user_id := $1,
                     p_limit := $2
                 )
