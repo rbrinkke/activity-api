@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: activities-db
+    environment:
+      POSTGRES_USER: activities_user
+      POSTGRES_PASSWORD: activities_pass
+      POSTGRES_DB: activities_db
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sqlschema:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./database/procedures:/docker-entrypoint-initdb.d/procedures:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U activities_user -d activities_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - activities-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: activities-api
+    ports:
+      - "8000:8000"
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql://activities_user:activities_pass@db:5432/activities_db
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-change-in-production}
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./database:/app/database
+    networks:
+      - activities-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  activities-network:
+    driver: bridge

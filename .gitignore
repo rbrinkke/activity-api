@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# FastAPI
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Docker
+docker-compose.override.yml
+
+# OS
+Thumbs.db
