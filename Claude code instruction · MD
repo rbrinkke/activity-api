@@ -1,0 +1,858 @@
+# INSTRUCTIE VOOR CLAUDE CODE: BUILD ACTIVITIES API
+
+## CONTEXT
+
+Je gaat een volledige Activities API bouwen in FastAPI met PostgreSQL stored procedures. Alle specificaties, database schema's, en architectuurregels zijn beschikbaar in de GitHub repository.
+
+**Repository URL**: `<PLAATS_HIER_JOUW_GITHUB_URL>`
+
+## BELANGRIJKSTE BESTANDEN IN REPOSITORY
+
+```
+├── specs/
+│   ├── activities-api-specifications.md    # Volledige API specs met alle endpoints
+│   ├── database-schema.sql                 # Alle PostgreSQL tabellen + enums
+│   ├── auth-api-specs.md                   # JWT token structuur (voor integratie)
+│   └── fastapi-blueprint.md                # Universele FastAPI best practices
+└── README.md                               # Project overview
+```
+
+## OPDRACHT
+
+Bouw de **Activities API** volgens de specifications in `activities-api-specifications.md`.
+
+### BELANGRIJKE REGELS
+
+1. **100% Stored Procedures**: NOOIT direct SQL in Python code. Alle database interactie via stored procedures.
+
+2. **Volg het FastAPI Blueprint**: Gebruik de structuur uit `fastapi-blueprint.md`:
+   - Routes zijn dunne HTTP lagen
+   - Services bevatten alle business logic
+   - Dependency injection voor testbaarheid
+   - Structured logging met correlation IDs
+   - Centralized config
+
+3. **JWT Token Handling**: 
+   - Tokens komen van de Auth API (zie `auth-api-specs.md`)
+   - Extract `user_id`, `subscription_level`, `ghost_mode`, `roles` uit token
+   - Pass deze waarden door naar stored procedures
+
+4. **Blocking Logic is Kritiek**:
+   - Check ALTIJD in beiderichtingen (A blocks B OR B blocks A)
+   - XXL activities: blocking werkt NIET
+   - Dit staat uitgelegd in de specs
+
+5. **Error Handling**:
+   - Map PostgreSQL errors naar HTTP status codes
+   - Gebruik error codes uit specs (bijv. `ERR_NOT_FOUND`, `ERR_FORBIDDEN`)
+   - Consistent error response format
+
+## STAP-VOOR-STAP PLAN
+
+### FASE 1: PROJECT SETUP (Start hier!)
+
+1. **Clone de repository en lees de specs**:
+   ```bash
+   git clone <REPO_URL>
+   cd activities-api
+   ```
+
+2. **Lees eerst deze bestanden in deze volgorde**:
+   - `specs/fastapi-blueprint.md` (architectuur)
+   - `specs/database-schema.sql` (database structuur)
+   - `specs/activities-api-specifications.md` (API specificaties)
+
+3. **Create project structure** (volgens blueprint):
+   ```
+   activities-api/
+   ├── app/
+   │   ├── __init__.py
+   │   ├── main.py
+   │   ├── config.py
+   │   ├── routes/
+   │   │   ├── __init__.py
+   │   │   ├── activities.py
+   │   │   ├── categories.py
+   │   │   └── reviews.py
+   │   ├── services/
+   │   │   ├── __init__.py
+   │   │   ├── activity_service.py
+   │   │   ├── category_service.py
+   │   │   └── review_service.py
+   │   ├── schemas/
+   │   │   ├── __init__.py
+   │   │   ├── activity.py
+   │   │   ├── category.py
+   │   │   └── review.py
+   │   ├── core/
+   │   │   ├── __init__.py
+   │   │   ├── logging_config.py
+   │   │   ├── exceptions.py
+   │   │   ├── security.py
+   │   │   └── database.py
+   │   ├── middleware/
+   │   │   ├── __init__.py
+   │   │   └── correlation.py
+   │   └── dependencies.py
+   ├── tests/
+   ├── .env.example
+   ├── Dockerfile
+   ├── docker-compose.yml
+   ├── requirements.txt
+   └── README.md
+   ```
+
+4. **Setup requirements.txt**:
+   ```
+   fastapi==0.104.1
+   pydantic==2.5.0
+   pydantic-settings==2.1.0
+   asyncpg==0.29.0
+   python-jose[cryptography]==3.3.0
+   python-multipart==0.0.6
+   uvicorn[standard]==0.24.0
+   structlog==23.2.0
+   pytest==7.4.3
+   pytest-asyncio==0.21.1
+   httpx==0.25.1
+   ```
+
+5. **Setup .env.example**:
+   ```env
+   # Environment
+   ENVIRONMENT=development
+   DEBUG=true
+   
+   # API
+   API_V1_PREFIX=/api/v1
+   PROJECT_NAME=Activities API
+   
+   # Database
+   DATABASE_URL=postgresql://user:password@localhost:5432/activities_db
+   
+   # JWT (from Auth API)
+   JWT_SECRET_KEY=your-secret-key-here
+   JWT_ALGORITHM=HS256
+   
+   # Logging
+   LOG_LEVEL=INFO
+   ```
+
+### FASE 2: DATABASE SETUP
+
+1. **Create database en schema**:
+   ```bash
+   psql -U postgres
+   CREATE DATABASE activities_db;
+   \c activities_db
+   \i specs/database-schema.sql
+   ```
+
+2. **Test dat alle tabellen er zijn**:
+   ```sql
+   \dt activity.*
+   -- Je moet zien: users, activities, categories, participants, etc.
+   ```
+
+### FASE 3: CORE IMPLEMENTATION
+
+**Start met de basis (in deze volgorde):**
+
+#### 3.1 Config & Database Connection
+
+1. **Implement `app/config.py`**:
+   - Use Pydantic BaseSettings
+   - Load from .env
+   - See `fastapi-blueprint.md` for template
+
+2. **Implement `app/core/database.py`**:
+   - asyncpg connection pool
+   - Transaction context manager
+   - See specs for configuration
+
+3. **Implement `app/core/logging_config.py`**:
+   - structlog setup
+   - JSON logging for production
+   - Console logging for development
+
+#### 3.2 Security & Middleware
+
+1. **Implement `app/core/security.py`**:
+   - JWT decode function
+   - Extract user_id, subscription_level, ghost_mode, roles
+   - Dependency for protected routes
+
+2. **Implement `app/middleware/correlation.py`**:
+   - Add X-Trace-ID to all requests
+   - Bind to structlog context
+
+3. **Implement `app/core/exceptions.py`**:
+   - Custom exception classes
+   - Error response models
+   - Exception handlers for FastAPI
+
+#### 3.3 Main Application Setup
+
+**Implement `app/main.py`**:
+```python
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from app.core.database import db
+from app.core.logging_config import setup_logging
+from app.core.exceptions import setup_exception_handlers
+from app.middleware.correlation import CorrelationMiddleware
+from app.routes import activities, categories, reviews
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    setup_logging(settings.ENVIRONMENT)
+    await db.connect()
+    logger.info("Application started")
+    
+    yield
+    
+    # Shutdown
+    await db.disconnect()
+    logger.info("Application stopped")
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    lifespan=lifespan
+)
+
+# Middleware
+app.add_middleware(CorrelationMiddleware)
+
+# Exception handlers
+setup_exception_handlers(app)
+
+# Routes
+app.include_router(activities.router, prefix="/api/v1", tags=["activities"])
+app.include_router(categories.router, prefix="/api/v1", tags=["categories"])
+app.include_router(reviews.router, prefix="/api/v1", tags=["reviews"])
+
+# Health check
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+```
+
+### FASE 4: IMPLEMENT ENDPOINTS (Volgens checklist in specs)
+
+**Volg deze volgorde (van simpel naar complex):**
+
+#### 4.1 Categories (Simpelst - start hier!)
+
+1. **Stored Procedure: `sp_list_categories`**
+   - Locatie: Database (SQL file in `database/procedures/`)
+   - Lees specs sectie "ENDPOINT 4.1"
+   - Implement exact volgens SP Logic uit specs
+
+2. **Schema: `app/schemas/category.py`**
+   ```python
+   from pydantic import BaseModel, UUID4
+   from typing import Optional
+   
+   class CategoryBase(BaseModel):
+       name: str
+       slug: str
+       description: Optional[str] = None
+       icon_url: Optional[str] = None
+       display_order: int = 0
+   
+   class CategoryCreate(CategoryBase):
+       pass
+   
+   class CategoryResponse(CategoryBase):
+       category_id: UUID4
+       is_active: bool
+       created_at: datetime
+       
+       class Config:
+           from_attributes = True
+   ```
+
+3. **Service: `app/services/category_service.py`**
+   ```python
+   class CategoryService:
+       def __init__(self, db):
+           self.db = db
+       
+       async def list_categories(self):
+           async with self.db.pool.acquire() as conn:
+               rows = await conn.fetch("SELECT * FROM activity.sp_list_categories()")
+               return [dict(row) for row in rows]
+   ```
+
+4. **Route: `app/routes/categories.py`**
+   ```python
+   from fastapi import APIRouter, Depends
+   from app.services.category_service import CategoryService
+   from app.dependencies import get_category_service
+   
+   router = APIRouter()
+   
+   @router.get("/categories", response_model=list[CategoryResponse])
+   async def list_categories(
+       service: CategoryService = Depends(get_category_service)
+   ):
+       return await service.list_categories()
+   ```
+
+5. **Test het endpoint**:
+   ```bash
+   curl http://localhost:8000/api/v1/categories
+   ```
+
+**Als dit werkt, heb je de hele flow correct! Repeat voor andere endpoints.**
+
+#### 4.2 Activity CRUD (Core functionality)
+
+**Voor elk endpoint in specs:**
+
+1. **Lees de spec sectie** (bijv. "ENDPOINT 1.1: CREATE ACTIVITY")
+2. **Create stored procedure** exact volgens "SP Logic"
+3. **Create Pydantic schema** voor request/response
+4. **Implement service method** die SP aanroept
+5. **Create route** die service gebruikt
+6. **Test met curl**
+
+**Volgorde:**
+- ✅ POST /activities (create)
+- ✅ GET /activities/{id} (get by id)
+- ✅ PUT /activities/{id} (update)
+- ✅ POST /activities/{id}/cancel (cancel)
+- ✅ DELETE /activities/{id} (delete)
+
+#### 4.3 Search & Discovery (Complex - doe dit later)
+
+- GET /activities/search
+- GET /activities/nearby
+- GET /activities/feed
+- GET /activities/recommendations
+
+**Let op**: Search endpoint is het meest complex. De stored procedure heeft:
+- Dynamic WHERE clauses
+- Blocking logic
+- Privacy checks
+- Distance calculations
+- Pagination
+
+Besteed hier extra tijd aan!
+
+#### 4.4 Reviews
+
+- POST /activities/{id}/reviews
+- GET /activities/{id}/reviews
+- PUT /reviews/{id}
+- DELETE /reviews/{id}
+
+#### 4.5 Participants
+
+- GET /activities/{id}/participants
+- GET /activities/{id}/waitlist
+
+### FASE 5: STORED PROCEDURES DETAILS
+
+**Voor elke stored procedure:**
+
+1. **Lees de specs** voor SP Input Parameters en SP Output
+2. **Implement exact volgens SP Logic steps**
+3. **Use template structure**:
+
+```sql
+CREATE OR REPLACE FUNCTION activity.sp_create_activity(
+    p_organizer_user_id UUID,
+    p_category_id UUID,
+    p_title VARCHAR(255),
+    -- ... alle parameters uit specs
+)
+RETURNS TABLE (
+    activity_id UUID,
+    organizer_user_id UUID,
+    -- ... alle output columns uit specs
+) AS $$
+DECLARE
+    v_activity_id UUID;
+    v_location_id UUID;
+BEGIN
+    -- 1. VALIDATION
+    -- Check user exists and active
+    IF NOT EXISTS (
+        SELECT 1 FROM activity.users 
+        WHERE user_id = p_organizer_user_id AND status = 'active'
+    ) THEN
+        RAISE EXCEPTION 'ERR_USER_NOT_FOUND' USING ERRCODE = '42704';
+    END IF;
+    
+    -- Check category if provided
+    IF p_category_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM activity.categories
+        WHERE category_id = p_category_id AND is_active = TRUE
+    ) THEN
+        RAISE EXCEPTION 'ERR_CATEGORY_NOT_FOUND' USING ERRCODE = '42704';
+    END IF;
+    
+    -- Validate scheduled_at is future
+    IF p_scheduled_at <= NOW() THEN
+        RAISE EXCEPTION 'ERR_SCHEDULED_AT_PAST' USING ERRCODE = '22000';
+    END IF;
+    
+    -- Validate max_participants range
+    IF p_max_participants < 2 OR p_max_participants > 1000 THEN
+        RAISE EXCEPTION 'ERR_INVALID_MAX_PARTICIPANTS' USING ERRCODE = '22000';
+    END IF;
+    
+    -- 2. BUSINESS LOGIC
+    -- Insert activity
+    INSERT INTO activity.activities (
+        organizer_user_id,
+        category_id,
+        title,
+        description,
+        activity_type,
+        activity_privacy_level,
+        scheduled_at,
+        duration_minutes,
+        joinable_at_free,
+        max_participants,
+        language,
+        external_chat_id,
+        status,
+        current_participants_count
+    ) VALUES (
+        p_organizer_user_id,
+        p_category_id,
+        p_title,
+        p_description,
+        p_activity_type,
+        p_activity_privacy_level,
+        p_scheduled_at,
+        p_duration_minutes,
+        p_joinable_at_free,
+        p_max_participants,
+        p_language,
+        p_external_chat_id,
+        'published',
+        1  -- Organizer is first participant
+    ) RETURNING activity_id INTO v_activity_id;
+    
+    -- Insert location if provided
+    IF p_venue_name IS NOT NULL OR p_latitude IS NOT NULL THEN
+        INSERT INTO activity.activity_locations (
+            activity_id,
+            venue_name,
+            address_line1,
+            address_line2,
+            city,
+            state_province,
+            postal_code,
+            country,
+            latitude,
+            longitude,
+            place_id
+        ) VALUES (
+            v_activity_id,
+            p_venue_name,
+            p_address_line1,
+            p_address_line2,
+            p_city,
+            p_state_province,
+            p_postal_code,
+            p_country,
+            p_latitude,
+            p_longitude,
+            p_place_id
+        );
+    END IF;
+    
+    -- Insert tags
+    IF p_tags IS NOT NULL THEN
+        INSERT INTO activity.activity_tags (activity_id, tag)
+        SELECT v_activity_id, jsonb_array_elements_text(p_tags);
+    END IF;
+    
+    -- Insert organizer as participant
+    INSERT INTO activity.participants (
+        activity_id,
+        user_id,
+        role,
+        participation_status
+    ) VALUES (
+        v_activity_id,
+        p_organizer_user_id,
+        'organizer',
+        'registered'
+    );
+    
+    -- Increment activities_created_count
+    UPDATE activity.users
+    SET activities_created_count = activities_created_count + 1
+    WHERE user_id = p_organizer_user_id;
+    
+    -- 3. RETURN
+    RETURN QUERY
+    SELECT 
+        a.activity_id,
+        a.organizer_user_id,
+        a.category_id,
+        a.title,
+        a.description,
+        a.activity_type,
+        a.activity_privacy_level,
+        a.status,
+        a.scheduled_at,
+        a.duration_minutes,
+        a.joinable_at_free,
+        a.max_participants,
+        a.current_participants_count,
+        a.waitlist_count,
+        a.location_name,
+        a.city,
+        a.language,
+        a.external_chat_id,
+        a.created_at,
+        -- Location as JSONB
+        (
+            SELECT row_to_json(l.*)
+            FROM activity.activity_locations l
+            WHERE l.activity_id = a.activity_id
+        )::JSONB as location,
+        -- Tags as array
+        ARRAY(
+            SELECT tag 
+            FROM activity.activity_tags 
+            WHERE activity_id = a.activity_id
+        ) as tags
+    FROM activity.activities a
+    WHERE a.activity_id = v_activity_id;
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+```
+
+**Test stored procedure direct in psql**:
+```sql
+SELECT * FROM activity.sp_create_activity(
+    '550e8400-e29b-41d4-a716-446655440000'::UUID,  -- user_id
+    NULL,  -- category_id
+    'Test Activity',
+    'Test description',
+    'standard'::activity.activity_type,
+    'public'::activity.activity_privacy_level,
+    NOW() + INTERVAL '1 day',
+    120,
+    NULL,
+    10,
+    'en',
+    NULL,
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+    '["hiking", "outdoor"]'::JSONB
+);
+```
+
+### FASE 6: BLOCKING LOGIC (KRITIEK!)
+
+**Blocking check moet OVERAL waar activiteiten getoond worden:**
+
+```sql
+-- In ELKE stored procedure die activities returned:
+
+-- Get blocked user IDs (beide richtingen!)
+v_blocked_users := ARRAY(
+    SELECT blocked_user_id 
+    FROM activity.user_blocks 
+    WHERE blocker_user_id = p_user_id
+    UNION
+    SELECT blocker_user_id 
+    FROM activity.user_blocks 
+    WHERE blocked_user_id = p_user_id
+);
+
+-- Filter activities
+WHERE 
+    -- Normal filters ...
+    AND (
+        -- Show if NOT blocked
+        a.organizer_user_id NOT IN (SELECT unnest(v_blocked_users))
+        -- OR if XXL (blocking doesn't apply)
+        OR a.activity_type = 'xxl'
+    )
+```
+
+**Test blocking thoroughly:**
+1. User A blocks User B
+2. User B should NOT see A's activities (unless XXL)
+3. User A should NOT see B's activities (unless XXL)
+4. XXL activities should be visible regardless
+
+### FASE 7: ERROR HANDLING
+
+**In elke service method:**
+
+```python
+from app.core.exceptions import (
+    NotFoundException,
+    ForbiddenException,
+    ValidationException
+)
+
+async def get_activity(self, activity_id: UUID, user_id: UUID):
+    try:
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM activity.sp_get_activity_by_id($1, $2)",
+                activity_id,
+                user_id
+            )
+            
+            if not rows:
+                raise NotFoundException("Activity")
+            
+            return dict(rows[0])
+            
+    except asyncpg.exceptions.RaiseException as e:
+        error_msg = str(e)
+        
+        if 'ERR_NOT_FOUND' in error_msg:
+            raise NotFoundException("Activity")
+        elif 'ERR_FORBIDDEN' in error_msg:
+            raise ForbiddenException("No access to this activity")
+        elif 'ERR_BLOCKED' in error_msg:
+            raise ForbiddenException("User is blocked")
+        else:
+            logger.error("Database error", error=error_msg)
+            raise
+```
+
+### FASE 8: TESTING
+
+**Test checklist voor elk endpoint:**
+
+1. ✅ **Happy path**: Normal successful request
+2. ✅ **Authentication**: Missing/invalid JWT token → 401
+3. ✅ **Authorization**: Wrong user trying to edit → 403
+4. ✅ **Validation**: Invalid input → 400/422
+5. ✅ **Not found**: Non-existent ID → 404
+6. ✅ **Blocking**: Blocked user scenarios → 403
+7. ✅ **Privacy**: friends_only, invite_only → 403
+8. ✅ **Subscription**: Premium features for free users
+
+**Example test**:
+```python
+# tests/test_activities.py
+import pytest
+from httpx import AsyncClient
+
+@pytest.mark.asyncio
+async def test_create_activity_success(client: AsyncClient, auth_headers):
+    response = await client.post(
+        "/api/v1/activities",
+        json={
+            "title": "Test Activity",
+            "description": "Test description",
+            "activity_type": "standard",
+            "activity_privacy_level": "public",
+            "scheduled_at": "2025-12-01T10:00:00Z",
+            "max_participants": 10,
+            "language": "en",
+            "tags": ["test"]
+        },
+        headers=auth_headers
+    )
+    
+    assert response.status_code == 201
+    data = response.json()
+    assert data["title"] == "Test Activity"
+    assert data["current_participants_count"] == 1
+
+@pytest.mark.asyncio
+async def test_create_activity_past_date(client: AsyncClient, auth_headers):
+    response = await client.post(
+        "/api/v1/activities",
+        json={
+            "title": "Test Activity",
+            "scheduled_at": "2020-01-01T10:00:00Z",  # Past date
+            # ... other fields
+        },
+        headers=auth_headers
+    )
+    
+    assert response.status_code == 422
+    assert "ERR_SCHEDULED_AT_PAST" in response.text
+```
+
+### FASE 9: DOCKER SETUP
+
+**Dockerfile**:
+```dockerfile
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.11-slim
+
+RUN useradd -m -u 1000 appuser
+
+WORKDIR /app
+
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY . .
+
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**docker-compose.yml**:
+```yaml
+version: '3.8'
+
+services:
+  db:
+    image: postgis/postgis:15-3.3
+    environment:
+      POSTGRES_USER: activities_user
+      POSTGRES_PASSWORD: activities_pass
+      POSTGRES_DB: activities_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./specs/database-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://activities_user:activities_pass@db:5432/activities_db
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ENVIRONMENT: development
+    depends_on:
+      - db
+    volumes:
+      - .:/app
+
+volumes:
+  postgres_data:
+```
+
+**Run it**:
+```bash
+docker-compose up -d
+docker-compose logs -f api
+```
+
+## DEBUGGING TIPS
+
+### Als iets niet werkt:
+
+1. **Check logs met correlation ID**:
+   ```bash
+   docker-compose logs -f api | grep "correlation_id=abc123"
+   ```
+
+2. **Test stored procedure direct**:
+   ```sql
+   SELECT * FROM activity.sp_create_activity(...parameters...);
+   ```
+
+3. **Check database connection**:
+   ```python
+   async with db.pool.acquire() as conn:
+       result = await conn.fetchval("SELECT 1")
+       print(f"DB connected: {result}")
+   ```
+
+4. **Test JWT decode**:
+   ```python
+   from app.core.security import decode_token
+   token = "eyJ..."
+   payload = decode_token(token)
+   print(payload)
+   ```
+
+5. **Enable SQL logging in asyncpg**:
+   ```python
+   import logging
+   logging.getLogger('asyncpg').setLevel(logging.DEBUG)
+   ```
+
+## DELIVERABLES CHECKLIST
+
+### Code Deliverables:
+- [ ] All 18 endpoints implemented
+- [ ] All 18 stored procedures created
+- [ ] Pydantic schemas for all requests/responses
+- [ ] Service layer with dependency injection
+- [ ] JWT authentication middleware
+- [ ] Error handling with proper HTTP codes
+- [ ] Structured logging with correlation IDs
+- [ ] Docker setup (Dockerfile + docker-compose)
+- [ ] .env.example with all required vars
+- [ ] requirements.txt with pinned versions
+
+### Documentation Deliverables:
+- [ ] README.md with setup instructions
+- [ ] API documentation (via FastAPI /docs)
+- [ ] Database migration script
+- [ ] Testing guide
+
+### Testing Deliverables:
+- [ ] Unit tests for services
+- [ ] Integration tests for endpoints
+- [ ] Test for blocking logic
+- [ ] Test for privacy levels
+- [ ] Test for subscription restrictions
+
+## SUCCESS CRITERIA
+
+✅ **API is complete when**:
+1. All 18 endpoints return correct responses
+2. Blocking logic works (including XXL exception)
+3. Privacy levels enforced correctly
+4. Subscription features gated properly
+5. All stored procedures follow specs exactly
+6. Error handling returns correct HTTP codes
+7. JWT authentication works
+8. Docker containers start successfully
+9. /health endpoint returns 200
+10. /docs shows all endpoints
+
+## VEELVOORKOMENDE FOUTEN (VERMIJD!)
+
+1. ❌ **SQL in Python code**: NEVER! Always stored procedures
+2. ❌ **Unidirectionele blocking check**: Check BEIDE richtingen!
+3. ❌ **XXL exception vergeten**: Blocking werkt NIET voor XXL
+4. ❌ **Subscription niet checken**: Premium features MOETEN gevalideerd
+5. ❌ **Geen error mapping**: PostgreSQL errors MOETEN gemapped naar HTTP
+6. ❌ **Pagination vergeten**: Alle list endpoints MOETEN pagination hebben
+7. ❌ **NULL handling**: Location fields kunnen NULL zijn
+8. ❌ **Counters vergeten**: activities_created_count MOET geüpdatet
+9. ❌ **Date validation**: scheduled_at MOET future zijn
+10. ❌ **Hardcoded values**: ALLES via config/env vars
+
+## FINAL NOTES
+
+- **Read specs first, code second**: Specifications zijn LEIDEND
+- **Test incrementally**: Test elk endpoint na implementatie
+- **Follow the blueprint**: FastAPI structure uit blueprint.md
+- **Ask for clarification**: Bij twijfel, check de specs opnieuw
+- **Performance matters**: Indexes zijn al in schema, gebruik ze!
+
+**LET OP**: Dit is een productie-ready API. Code quality, error handling, en security zijn net zo belangrijk als functionality!
+
+Good luck! 🚀
