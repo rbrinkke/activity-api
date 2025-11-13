@@ -161,6 +161,8 @@ def get_search_service() -> SearchService:
     description="Search activities with various filters. Language filter requires Premium subscription."
 )
 async def search_activities(
+    current_user: CurrentUser,
+    service: Annotated[SearchService, Depends(get_search_service)],
     query: Optional[str] = Query(None, max_length=255, description="Search in title/description"),
     category_id: Optional[UUID] = Query(None, description="Filter by category"),
     activity_type: Optional[str] = Query(None, description="Filter by type"),
@@ -168,9 +170,7 @@ async def search_activities(
     language: Optional[str] = Query(None, max_length=5, description="Filter by language (Premium)"),
     has_spots_available: Optional[bool] = Query(None, description="Only with available spots"),
     limit: int = Query(20, ge=1, le=100, description="Maximum results"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
-    current_user: CurrentUser = Depends(),
-    service: Annotated[SearchService, Depends(get_search_service)] = Depends()
+    offset: int = Query(0, ge=0, description="Pagination offset")
 ):
     """Search activities with filters."""
     from app.schemas.activity import ActivityType as ActivityTypeEnum
@@ -208,14 +208,14 @@ async def search_activities(
     description="Find activities near a specific location using geospatial search."
 )
 async def nearby_activities(
+    current_user: CurrentUser,
+    service: Annotated[SearchService, Depends(get_search_service)],
     latitude: Decimal = Query(..., ge=-90, le=90, description="User latitude"),
     longitude: Decimal = Query(..., ge=-180, le=180, description="User longitude"),
     radius_km: float = Query(10.0, ge=0.1, le=100, description="Search radius in km"),
     category_id: Optional[UUID] = Query(None, description="Filter by category"),
     limit: int = Query(20, ge=1, le=100, description="Maximum results"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
-    current_user: CurrentUser = Depends(),
-    service: Annotated[SearchService, Depends(get_search_service)] = Depends()
+    offset: int = Query(0, ge=0, description="Pagination offset")
 ):
     """Find nearby activities."""
     filters = NearbySearchFilters(
@@ -241,9 +241,9 @@ async def nearby_activities(
     description="Get personalized activity feed based on user interests and past activities."
 )
 async def personalized_feed(
-    limit: int = Query(20, ge=1, le=100, description="Maximum activities"),
-    current_user: CurrentUser = Depends(),
-    service: Annotated[SearchService, Depends(get_search_service)] = Depends()
+    current_user: CurrentUser,
+    service: Annotated[SearchService, Depends(get_search_service)],
+    limit: int = Query(20, ge=1, le=100, description="Maximum activities")
 ):
     """Get personalized activity feed."""
     result = await service.personalized_feed(
@@ -260,9 +260,9 @@ async def personalized_feed(
     description="Get AI-powered activity recommendations based on collaborative filtering."
 )
 async def get_recommendations(
-    limit: int = Query(10, ge=1, le=50, description="Maximum recommendations"),
-    current_user: CurrentUser = Depends(),
-    service: Annotated[SearchService, Depends(get_search_service)] = Depends()
+    current_user: CurrentUser,
+    service: Annotated[SearchService, Depends(get_search_service)],
+    limit: int = Query(10, ge=1, le=50, description="Maximum recommendations")
 ):
     """Get AI-powered recommendations."""
     result = await service.recommendations(

@@ -57,10 +57,10 @@ async def create_review(
 )
 async def list_reviews(
     activity_id: UUID,
+    service: Annotated[ReviewService, Depends(get_review_service)],
     limit: int = Query(50, ge=1, le=100, description="Maximum reviews to return"),
     offset: int = Query(0, ge=0, description="Number of reviews to skip"),
-    current_user: OptionalUser = None,
-    service: Annotated[ReviewService, Depends(get_review_service)] = Depends()
+    current_user: OptionalUser = None
 ):
     """List all reviews for an activity."""
     requesting_user_id = UUID(current_user.user_id) if current_user else None

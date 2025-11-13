@@ -1,0 +1,1079 @@
+-- =============================================================================
+-- Activity API - Complete Stored Procedures
+-- =============================================================================
+-- This file contains all stored procedures required for the Activity API
+-- Schema: activity
+-- =============================================================================
+
+-- Set search path
+SET search_path TO activity, public;
+
+-- =============================================================================
+-- 1. CATEGORY STORED PROCEDURES
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- sp_list_categories: Get all categories with activity counts
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_list_categories()
+RETURNS TABLE(
+    category_id UUID,
+    name VARCHAR,
+    description TEXT,
+    icon_name VARCHAR,
+    activity_count BIGINT,
+    is_active BOOLEAN,
+    created_at TIMESTAMP
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        c.id,
+        c.name,
+        c.description,
+        c.icon_name,
+        COUNT(a.id) as activity_count,
+        c.is_active,
+        c.created_at
+    FROM activity.categories c
+    LEFT JOIN activity.activities a ON c.id = a.category_id AND a.status = 'published'
+    WHERE c.is_active = TRUE
+    GROUP BY c.id, c.name, c.description, c.icon_name, c.is_active, c.created_at
+    ORDER BY c.name;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_create_category: Create a new category
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_create_category(
+    p_name VARCHAR,
+    p_description TEXT,
+    p_icon_name VARCHAR
+)
+RETURNS TABLE(
+    category_id UUID,
+    name VARCHAR,
+    description TEXT,
+    icon_name VARCHAR,
+    is_active BOOLEAN,
+    created_at TIMESTAMP
+) AS $$
+BEGIN
+    RETURN QUERY
+    INSERT INTO activity.categories (name, description, icon_name, is_active)
+    VALUES (p_name, p_description, p_icon_name, TRUE)
+    RETURNING id, categories.name, categories.description, categories.icon_name, categories.is_active, categories.created_at;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_update_category: Update category
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_update_category(
+    p_category_id UUID,
+    p_name VARCHAR,
+    p_description TEXT,
+    p_icon_name VARCHAR
+)
+RETURNS TABLE(
+    category_id UUID,
+    name VARCHAR,
+    description TEXT,
+    icon_name VARCHAR
+) AS $$
+BEGIN
+    RETURN QUERY
+    UPDATE activity.categories
+    SET
+        name = COALESCE(p_name, categories.name),
+        description = COALESCE(p_description, categories.description),
+        icon_name = COALESCE(p_icon_name, categories.icon_name),
+        updated_at = NOW()
+    WHERE id = p_category_id
+    RETURNING id, categories.name, categories.description, categories.icon_name;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- 2. ACTIVITY CRUD STORED PROCEDURES
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- sp_create_activity: Create new activity with location
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_create_activity(
+    p_organizer_user_id UUID,
+    p_category_id UUID,
+    p_title VARCHAR,
+    p_description TEXT,
+    p_activity_type activity.activity_type,
+    p_activity_privacy_level activity.privacy_level,
+    p_scheduled_at TIMESTAMP,
+    p_duration_minutes INTEGER,
+    p_joinable_at_free TIMESTAMP,
+    p_max_participants INTEGER,
+    p_language VARCHAR,
+    p_external_chat_id VARCHAR,
+    p_tags TEXT[],
+    -- Location parameters
+    p_venue_name VARCHAR DEFAULT NULL,
+    p_address_line1 VARCHAR DEFAULT NULL,
+    p_address_line2 VARCHAR DEFAULT NULL,
+    p_city VARCHAR DEFAULT NULL,
+    p_state_province VARCHAR DEFAULT NULL,
+    p_postal_code VARCHAR DEFAULT NULL,
+    p_country VARCHAR DEFAULT NULL,
+    p_latitude DECIMAL DEFAULT NULL,
+    p_longitude DECIMAL DEFAULT NULL,
+    p_place_id VARCHAR DEFAULT NULL
+)
+RETURNS TABLE(
+    activity_id UUID,
+    location_id UUID,
+    status activity.activity_status,
+    created_at TIMESTAMP
+) AS $$
+DECLARE
+    v_activity_id UUID;
+    v_location_id UUID;
+    v_tag TEXT;
+BEGIN
+    -- Create activity
+    INSERT INTO activity.activities (
+        organizer_user_id, category_id, title, description,
+        activity_type, activity_privacy_level, status,
+        scheduled_at, duration_minutes, joinable_at_free,
+        max_participants, language, external_chat_id
+    )
+    VALUES (
+        p_organizer_user_id, p_category_id, p_title, p_description,
+        p_activity_type, p_activity_privacy_level, 'draft',
+        p_scheduled_at, p_duration_minutes, p_joinable_at_free,
+        p_max_participants, p_language, p_external_chat_id
+    )
+    RETURNING id INTO v_activity_id;
+
+    -- Create location if provided
+    IF p_venue_name IS NOT NULL OR p_latitude IS NOT NULL THEN
+        INSERT INTO activity.activity_locations (
+            activity_id, venue_name, address_line1, address_line2,
+            city, state_province, postal_code, country,
+            latitude, longitude, place_id
+        )
+        VALUES (
+            v_activity_id, p_venue_name, p_address_line1, p_address_line2,
+            p_city, p_state_province, p_postal_code, p_country,
+            p_latitude, p_longitude, p_place_id
+        )
+        RETURNING id INTO v_location_id;
+    END IF;
+
+    -- Add tags
+    IF p_tags IS NOT NULL AND array_length(p_tags, 1) > 0 THEN
+        FOREACH v_tag IN ARRAY p_tags
+        LOOP
+            INSERT INTO activity.activity_tags (activity_id, tag_name)
+            VALUES (v_activity_id, v_tag)
+            ON CONFLICT DO NOTHING;
+        END LOOP;
+    END IF;
+
+    -- Return result
+    RETURN QUERY
+    SELECT v_activity_id, v_location_id, 'draft'::activity.activity_status, NOW();
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_get_activity_by_id: Get activity with all details
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_get_activity_by_id(
+    p_activity_id UUID,
+    p_requesting_user_id UUID DEFAULT NULL
+)
+RETURNS TABLE(
+    activity_id UUID,
+    organizer_user_id UUID,
+    organizer_username VARCHAR,
+    organizer_first_name VARCHAR,
+    organizer_main_photo_url VARCHAR,
+    organizer_is_verified BOOLEAN,
+    category_id UUID,
+    category_name VARCHAR,
+    title VARCHAR,
+    description TEXT,
+    activity_type activity.activity_type,
+    activity_privacy_level activity.privacy_level,
+    status activity.activity_status,
+    scheduled_at TIMESTAMP,
+    duration_minutes INTEGER,
+    joinable_at_free TIMESTAMP,
+    max_participants INTEGER,
+    current_participants_count INTEGER,
+    waitlist_count INTEGER,
+    language VARCHAR,
+    external_chat_id VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    cancelled_at TIMESTAMP,
+    -- Location
+    location_id UUID,
+    venue_name VARCHAR,
+    address_line1 VARCHAR,
+    address_line2 VARCHAR,
+    city VARCHAR,
+    state_province VARCHAR,
+    postal_code VARCHAR,
+    country VARCHAR,
+    latitude DECIMAL,
+    longitude DECIMAL,
+    place_id VARCHAR,
+    -- Tags
+    tags TEXT[],
+    -- User-specific
+    user_participation_status activity.participation_status,
+    user_can_join BOOLEAN,
+    user_can_edit BOOLEAN,
+    is_blocked BOOLEAN
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        a.id,
+        a.organizer_user_id,
+        u.username,
+        u.first_name,
+        u.main_photo_url,
+        u.is_verified,
+        c.id,
+        c.name,
+        a.title,
+        a.description,
+        a.activity_type,
+        a.activity_privacy_level,
+        a.status,
+        a.scheduled_at,
+        a.duration_minutes,
+        a.joinable_at_free,
+        a.max_participants,
+        COALESCE(
+            (SELECT COUNT(*) FROM activity.participants p
+             WHERE p.activity_id = a.id AND p.participation_status = 'confirmed'),
+            0
+        )::INTEGER as current_participants_count,
+        COALESCE(
+            (SELECT COUNT(*) FROM activity.participants p
+             WHERE p.activity_id = a.id AND p.participation_status = 'waitlist'),
+            0
+        )::INTEGER as waitlist_count,
+        a.language,
+        a.external_chat_id,
+        a.created_at,
+        a.updated_at,
+        a.completed_at,
+        a.cancelled_at,
+        -- Location
+        l.id,
+        l.venue_name,
+        l.address_line1,
+        l.address_line2,
+        l.city,
+        l.state_province,
+        l.postal_code,
+        l.country,
+        l.latitude,
+        l.longitude,
+        l.place_id,
+        -- Tags
+        COALESCE(ARRAY_AGG(DISTINCT at.tag_name) FILTER (WHERE at.tag_name IS NOT NULL), ARRAY[]::TEXT[]),
+        -- User-specific
+        p.participation_status,
+        (a.organizer_user_id != p_requesting_user_id AND
+         a.status = 'published' AND
+         (SELECT COUNT(*) FROM activity.participants p2
+          WHERE p2.activity_id = a.id AND p2.participation_status = 'confirmed') < a.max_participants
+        ) as user_can_join,
+        (a.organizer_user_id = p_requesting_user_id) as user_can_edit,
+        FALSE as is_blocked
+    FROM activity.activities a
+    INNER JOIN activity.users u ON a.organizer_user_id = u.id
+    LEFT JOIN activity.categories c ON a.category_id = c.id
+    LEFT JOIN activity.activity_locations l ON a.id = l.activity_id
+    LEFT JOIN activity.activity_tags at ON a.id = at.activity_id
+    LEFT JOIN activity.participants p ON a.id = p.activity_id AND p.user_id = p_requesting_user_id
+    WHERE a.id = p_activity_id
+    GROUP BY
+        a.id, u.id, c.id, l.id, p.participation_status;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_update_activity: Update activity
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_update_activity(
+    p_activity_id UUID,
+    p_updating_user_id UUID,
+    p_category_id UUID DEFAULT NULL,
+    p_title VARCHAR DEFAULT NULL,
+    p_description TEXT DEFAULT NULL,
+    p_activity_type activity.activity_type DEFAULT NULL,
+    p_activity_privacy_level activity.privacy_level DEFAULT NULL,
+    p_scheduled_at TIMESTAMP DEFAULT NULL,
+    p_duration_minutes INTEGER DEFAULT NULL,
+    p_joinable_at_free TIMESTAMP DEFAULT NULL,
+    p_max_participants INTEGER DEFAULT NULL,
+    p_language VARCHAR DEFAULT NULL,
+    p_external_chat_id VARCHAR DEFAULT NULL,
+    p_tags TEXT[] DEFAULT NULL
+)
+RETURNS TABLE(
+    activity_id UUID,
+    updated_at TIMESTAMP,
+    updated BOOLEAN
+) AS $$
+DECLARE
+    v_organizer_id UUID;
+    v_tag TEXT;
+BEGIN
+    -- Check ownership
+    SELECT organizer_user_id INTO v_organizer_id
+    FROM activity.activities
+    WHERE id = p_activity_id;
+
+    IF v_organizer_id IS NULL THEN
+        RAISE EXCEPTION 'Activity not found';
+    END IF;
+
+    IF v_organizer_id != p_updating_user_id THEN
+        RAISE EXCEPTION 'Forbidden: Not the organizer';
+    END IF;
+
+    -- Update activity
+    UPDATE activity.activities
+    SET
+        category_id = COALESCE(p_category_id, category_id),
+        title = COALESCE(p_title, title),
+        description = COALESCE(p_description, description),
+        activity_type = COALESCE(p_activity_type, activity_type),
+        activity_privacy_level = COALESCE(p_activity_privacy_level, activity_privacy_level),
+        scheduled_at = COALESCE(p_scheduled_at, scheduled_at),
+        duration_minutes = COALESCE(p_duration_minutes, duration_minutes),
+        joinable_at_free = COALESCE(p_joinable_at_free, joinable_at_free),
+        max_participants = COALESCE(p_max_participants, max_participants),
+        language = COALESCE(p_language, language),
+        external_chat_id = COALESCE(p_external_chat_id, external_chat_id),
+        updated_at = NOW()
+    WHERE id = p_activity_id;
+
+    -- Update tags if provided
+    IF p_tags IS NOT NULL THEN
+        -- Delete existing tags
+        DELETE FROM activity.activity_tags WHERE activity_id = p_activity_id;
+
+        -- Add new tags
+        FOREACH v_tag IN ARRAY p_tags
+        LOOP
+            INSERT INTO activity.activity_tags (activity_id, tag_name)
+            VALUES (p_activity_id, v_tag)
+            ON CONFLICT DO NOTHING;
+        END LOOP;
+    END IF;
+
+    RETURN QUERY
+    SELECT p_activity_id, NOW(), TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_cancel_activity: Cancel activity
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_cancel_activity(
+    p_activity_id UUID,
+    p_cancelling_user_id UUID,
+    p_cancellation_reason TEXT DEFAULT NULL
+)
+RETURNS TABLE(
+    activity_id UUID,
+    status activity.activity_status,
+    cancelled_at TIMESTAMP,
+    participants_notified INTEGER
+) AS $$
+DECLARE
+    v_organizer_id UUID;
+    v_participant_count INTEGER;
+BEGIN
+    -- Check ownership
+    SELECT organizer_user_id INTO v_organizer_id
+    FROM activity.activities
+    WHERE id = p_activity_id;
+
+    IF v_organizer_id IS NULL THEN
+        RAISE EXCEPTION 'Activity not found';
+    END IF;
+
+    IF v_organizer_id != p_cancelling_user_id THEN
+        RAISE EXCEPTION 'Forbidden: Not the organizer';
+    END IF;
+
+    -- Get participant count
+    SELECT COUNT(*) INTO v_participant_count
+    FROM activity.participants
+    WHERE activity_id = p_activity_id AND participation_status = 'confirmed';
+
+    -- Cancel activity
+    UPDATE activity.activities
+    SET
+        status = 'cancelled',
+        cancelled_at = NOW(),
+        updated_at = NOW()
+    WHERE id = p_activity_id;
+
+    RETURN QUERY
+    SELECT p_activity_id, 'cancelled'::activity.activity_status, NOW(), v_participant_count;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_delete_activity: Soft delete activity
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_delete_activity(
+    p_activity_id UUID,
+    p_deleting_user_id UUID
+)
+RETURNS BOOLEAN AS $$
+DECLARE
+    v_organizer_id UUID;
+BEGIN
+    -- Check ownership
+    SELECT organizer_user_id INTO v_organizer_id
+    FROM activity.activities
+    WHERE id = p_activity_id;
+
+    IF v_organizer_id IS NULL THEN
+        RAISE EXCEPTION 'Activity not found';
+    END IF;
+
+    IF v_organizer_id != p_deleting_user_id THEN
+        RAISE EXCEPTION 'Forbidden: Not the organizer';
+    END IF;
+
+    -- Delete activity (soft delete would be: UPDATE status = 'deleted')
+    DELETE FROM activity.activities WHERE id = p_activity_id;
+
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- 3. SEARCH & FEED STORED PROCEDURES
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- sp_search_activities: Search activities with filters
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_search_activities(
+    p_search_text TEXT DEFAULT NULL,
+    p_category_ids UUID[] DEFAULT NULL,
+    p_activity_types activity.activity_type[] DEFAULT NULL,
+    p_latitude DECIMAL DEFAULT NULL,
+    p_longitude DECIMAL DEFAULT NULL,
+    p_radius_km INTEGER DEFAULT 50,
+    p_min_date TIMESTAMP DEFAULT NULL,
+    p_max_date TIMESTAMP DEFAULT NULL,
+    p_limit INTEGER DEFAULT 20,
+    p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(
+    activity_id UUID,
+    organizer_user_id UUID,
+    organizer_username VARCHAR,
+    organizer_first_name VARCHAR,
+    category_id UUID,
+    category_name VARCHAR,
+    title VARCHAR,
+    description TEXT,
+    activity_type activity.activity_type,
+    status activity.activity_status,
+    scheduled_at TIMESTAMP,
+    max_participants INTEGER,
+    current_participants_count INTEGER,
+    city VARCHAR,
+    country VARCHAR,
+    latitude DECIMAL,
+    longitude DECIMAL,
+    distance_km DECIMAL,
+    tags TEXT[],
+    total_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH filtered_activities AS (
+        SELECT
+            a.id,
+            a.organizer_user_id,
+            u.username,
+            u.first_name,
+            c.id as cat_id,
+            c.name as cat_name,
+            a.title,
+            a.description,
+            a.activity_type,
+            a.status,
+            a.scheduled_at,
+            a.max_participants,
+            COALESCE(
+                (SELECT COUNT(*) FROM activity.participants p
+                 WHERE p.activity_id = a.id AND p.participation_status = 'confirmed'),
+                0
+            )::INTEGER as part_count,
+            l.city,
+            l.country,
+            l.latitude,
+            l.longitude,
+            CASE
+                WHEN p_latitude IS NOT NULL AND l.latitude IS NOT NULL THEN
+                    6371 * acos(
+                        cos(radians(p_latitude)) * cos(radians(l.latitude)) *
+                        cos(radians(l.longitude) - radians(p_longitude)) +
+                        sin(radians(p_latitude)) * sin(radians(l.latitude))
+                    )
+                ELSE NULL
+            END as distance
+        FROM activity.activities a
+        INNER JOIN activity.users u ON a.organizer_user_id = u.id
+        LEFT JOIN activity.categories c ON a.category_id = c.id
+        LEFT JOIN activity.activity_locations l ON a.id = l.activity_id
+        WHERE
+            a.status = 'published'
+            AND (p_search_text IS NULL OR
+                 a.title ILIKE '%' || p_search_text || '%' OR
+                 a.description ILIKE '%' || p_search_text || '%')
+            AND (p_category_ids IS NULL OR a.category_id = ANY(p_category_ids))
+            AND (p_activity_types IS NULL OR a.activity_type = ANY(p_activity_types))
+            AND (p_min_date IS NULL OR a.scheduled_at >= p_min_date)
+            AND (p_max_date IS NULL OR a.scheduled_at <= p_max_date)
+            AND (p_latitude IS NULL OR l.latitude IS NULL OR
+                 6371 * acos(
+                     cos(radians(p_latitude)) * cos(radians(l.latitude)) *
+                     cos(radians(l.longitude) - radians(p_longitude)) +
+                     sin(radians(p_latitude)) * sin(radians(l.latitude))
+                 ) <= p_radius_km)
+    ),
+    counted AS (
+        SELECT COUNT(*) as total FROM filtered_activities
+    )
+    SELECT
+        fa.id,
+        fa.organizer_user_id,
+        fa.username,
+        fa.first_name,
+        fa.cat_id,
+        fa.cat_name,
+        fa.title,
+        fa.description,
+        fa.activity_type,
+        fa.status,
+        fa.scheduled_at,
+        fa.max_participants,
+        fa.part_count,
+        fa.city,
+        fa.country,
+        fa.latitude,
+        fa.longitude,
+        fa.distance,
+        COALESCE(ARRAY_AGG(DISTINCT at.tag_name) FILTER (WHERE at.tag_name IS NOT NULL), ARRAY[]::TEXT[]),
+        (SELECT total FROM counted)
+    FROM filtered_activities fa
+    LEFT JOIN activity.activity_tags at ON fa.id = at.activity_id
+    GROUP BY
+        fa.id, fa.organizer_user_id, fa.username, fa.first_name,
+        fa.cat_id, fa.cat_name, fa.title, fa.description,
+        fa.activity_type, fa.status, fa.scheduled_at,
+        fa.max_participants, fa.part_count, fa.city, fa.country,
+        fa.latitude, fa.longitude, fa.distance
+    ORDER BY fa.scheduled_at
+    LIMIT p_limit OFFSET p_offset;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_get_activity_feed: Get activity feed for user
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_get_activity_feed(
+    p_user_id UUID,
+    p_limit INTEGER DEFAULT 20,
+    p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(
+    activity_id UUID,
+    organizer_username VARCHAR,
+    title VARCHAR,
+    scheduled_at TIMESTAMP,
+    current_participants_count INTEGER,
+    max_participants INTEGER,
+    city VARCHAR,
+    tags TEXT[],
+    total_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH user_feed AS (
+        SELECT
+            a.id,
+            u.username,
+            a.title,
+            a.scheduled_at,
+            COALESCE(
+                (SELECT COUNT(*) FROM activity.participants p
+                 WHERE p.activity_id = a.id AND p.participation_status = 'confirmed'),
+                0
+            )::INTEGER as part_count,
+            a.max_participants,
+            l.city
+        FROM activity.activities a
+        INNER JOIN activity.users u ON a.organizer_user_id = u.id
+        LEFT JOIN activity.activity_locations l ON a.id = l.activity_id
+        WHERE
+            a.status = 'published'
+            AND a.scheduled_at > NOW()
+        ORDER BY a.scheduled_at
+        LIMIT p_limit OFFSET p_offset
+    ),
+    counted AS (
+        SELECT COUNT(*) as total
+        FROM activity.activities
+        WHERE status = 'published' AND scheduled_at > NOW()
+    )
+    SELECT
+        uf.id,
+        uf.username,
+        uf.title,
+        uf.scheduled_at,
+        uf.part_count,
+        uf.max_participants,
+        uf.city,
+        COALESCE(ARRAY_AGG(DISTINCT at.tag_name) FILTER (WHERE at.tag_name IS NOT NULL), ARRAY[]::TEXT[]),
+        (SELECT total FROM counted)
+    FROM user_feed uf
+    LEFT JOIN activity.activity_tags at ON uf.id = at.activity_id
+    GROUP BY uf.id, uf.username, uf.title, uf.scheduled_at, uf.part_count, uf.max_participants, uf.city;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_get_nearby_activities: Get activities near location
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_get_nearby_activities(
+    p_latitude DECIMAL,
+    p_longitude DECIMAL,
+    p_radius_km INTEGER DEFAULT 25,
+    p_limit INTEGER DEFAULT 20
+)
+RETURNS TABLE(
+    activity_id UUID,
+    title VARCHAR,
+    scheduled_at TIMESTAMP,
+    distance_km DECIMAL,
+    city VARCHAR,
+    latitude DECIMAL,
+    longitude DECIMAL
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        a.id,
+        a.title,
+        a.scheduled_at,
+        6371 * acos(
+            cos(radians(p_latitude)) * cos(radians(l.latitude)) *
+            cos(radians(l.longitude) - radians(p_longitude)) +
+            sin(radians(p_latitude)) * sin(radians(l.latitude))
+        ) as distance,
+        l.city,
+        l.latitude,
+        l.longitude
+    FROM activity.activities a
+    INNER JOIN activity.activity_locations l ON a.id = l.activity_id
+    WHERE
+        a.status = 'published'
+        AND a.scheduled_at > NOW()
+        AND l.latitude IS NOT NULL
+        AND 6371 * acos(
+            cos(radians(p_latitude)) * cos(radians(l.latitude)) *
+            cos(radians(l.longitude) - radians(p_longitude)) +
+            sin(radians(p_latitude)) * sin(radians(l.latitude))
+        ) <= p_radius_km
+    ORDER BY distance
+    LIMIT p_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- 4. PARTICIPANT STORED PROCEDURES
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- sp_get_activity_participants: Get participants for activity
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_get_activity_participants(
+    p_activity_id UUID,
+    p_limit INTEGER DEFAULT 50,
+    p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(
+    user_id UUID,
+    username VARCHAR,
+    first_name VARCHAR,
+    main_photo_url VARCHAR,
+    participation_status activity.participation_status,
+    joined_at TIMESTAMP,
+    is_verified BOOLEAN,
+    total_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH counted AS (
+        SELECT COUNT(*) as total
+        FROM activity.participants
+        WHERE activity_id = p_activity_id
+    )
+    SELECT
+        u.id,
+        u.username,
+        u.first_name,
+        u.main_photo_url,
+        p.participation_status,
+        p.created_at,
+        u.is_verified,
+        (SELECT total FROM counted)
+    FROM activity.participants p
+    INNER JOIN activity.users u ON p.user_id = u.id
+    WHERE p.activity_id = p_activity_id
+    ORDER BY p.created_at
+    LIMIT p_limit OFFSET p_offset;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_get_activity_waitlist: Get waitlist for activity
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_get_activity_waitlist(
+    p_activity_id UUID,
+    p_limit INTEGER DEFAULT 50,
+    p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(
+    user_id UUID,
+    username VARCHAR,
+    first_name VARCHAR,
+    waitlist_position INTEGER,
+    joined_at TIMESTAMP,
+    total_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH waitlist_with_position AS (
+        SELECT
+            p.user_id,
+            p.created_at,
+            ROW_NUMBER() OVER (ORDER BY p.created_at) as position
+        FROM activity.participants p
+        WHERE p.activity_id = p_activity_id
+          AND p.participation_status = 'waitlist'
+    ),
+    counted AS (
+        SELECT COUNT(*) as total FROM waitlist_with_position
+    )
+    SELECT
+        u.id,
+        u.username,
+        u.first_name,
+        w.position::INTEGER,
+        w.created_at,
+        (SELECT total FROM counted)
+    FROM waitlist_with_position w
+    INNER JOIN activity.users u ON w.user_id = u.id
+    ORDER BY w.position
+    LIMIT p_limit OFFSET p_offset;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- 5. REVIEW STORED PROCEDURES
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- sp_get_activity_reviews: Get reviews for activity
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_get_activity_reviews(
+    p_activity_id UUID,
+    p_limit INTEGER DEFAULT 20,
+    p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(
+    review_id UUID,
+    reviewer_user_id UUID,
+    reviewer_username VARCHAR,
+    reviewer_first_name VARCHAR,
+    reviewer_main_photo_url VARCHAR,
+    rating INTEGER,
+    review_text TEXT,
+    created_at TIMESTAMP,
+    total_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH counted AS (
+        SELECT COUNT(*) as total
+        FROM activity.activity_reviews
+        WHERE activity_id = p_activity_id
+    )
+    SELECT
+        r.id,
+        u.id,
+        u.username,
+        u.first_name,
+        u.main_photo_url,
+        r.rating,
+        r.review_text,
+        r.created_at,
+        (SELECT total FROM counted)
+    FROM activity.activity_reviews r
+    INNER JOIN activity.users u ON r.reviewer_user_id = u.id
+    WHERE r.activity_id = p_activity_id
+    ORDER BY r.created_at DESC
+    LIMIT p_limit OFFSET p_offset;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_create_activity_review: Create review for activity
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_create_activity_review(
+    p_activity_id UUID,
+    p_reviewer_user_id UUID,
+    p_rating INTEGER,
+    p_review_text TEXT
+)
+RETURNS TABLE(
+    review_id UUID,
+    activity_id UUID,
+    rating INTEGER,
+    created_at TIMESTAMP
+) AS $$
+BEGIN
+    -- Check if user participated
+    IF NOT EXISTS (
+        SELECT 1 FROM activity.participants
+        WHERE activity_id = p_activity_id
+          AND user_id = p_reviewer_user_id
+          AND participation_status = 'confirmed'
+    ) THEN
+        RAISE EXCEPTION 'User must have participated in activity to review';
+    END IF;
+
+    RETURN QUERY
+    INSERT INTO activity.activity_reviews (
+        activity_id, reviewer_user_id, rating, review_text
+    )
+    VALUES (p_activity_id, p_reviewer_user_id, p_rating, p_review_text)
+    RETURNING id, activity_reviews.activity_id, activity_reviews.rating, created_at;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_update_review: Update review
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_update_review(
+    p_review_id UUID,
+    p_updating_user_id UUID,
+    p_rating INTEGER,
+    p_review_text TEXT
+)
+RETURNS TABLE(
+    review_id UUID,
+    updated_at TIMESTAMP
+) AS $$
+DECLARE
+    v_reviewer_id UUID;
+BEGIN
+    -- Check ownership
+    SELECT reviewer_user_id INTO v_reviewer_id
+    FROM activity.activity_reviews
+    WHERE id = p_review_id;
+
+    IF v_reviewer_id IS NULL THEN
+        RAISE EXCEPTION 'Review not found';
+    END IF;
+
+    IF v_reviewer_id != p_updating_user_id THEN
+        RAISE EXCEPTION 'Forbidden: Not the reviewer';
+    END IF;
+
+    RETURN QUERY
+    UPDATE activity.activity_reviews
+    SET
+        rating = COALESCE(p_rating, rating),
+        review_text = COALESCE(p_review_text, review_text),
+        updated_at = NOW()
+    WHERE id = p_review_id
+    RETURNING id, updated_at;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_delete_review: Delete review
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_delete_review(
+    p_review_id UUID,
+    p_deleting_user_id UUID
+)
+RETURNS BOOLEAN AS $$
+DECLARE
+    v_reviewer_id UUID;
+BEGIN
+    -- Check ownership
+    SELECT reviewer_user_id INTO v_reviewer_id
+    FROM activity.activity_reviews
+    WHERE id = p_review_id;
+
+    IF v_reviewer_id IS NULL THEN
+        RAISE EXCEPTION 'Review not found';
+    END IF;
+
+    IF v_reviewer_id != p_deleting_user_id THEN
+        RAISE EXCEPTION 'Forbidden: Not the reviewer';
+    END IF;
+
+    DELETE FROM activity.activity_reviews WHERE id = p_review_id;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- 6. TAG STORED PROCEDURES
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- sp_get_popular_tags: Get most popular tags
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_get_popular_tags(
+    p_limit INTEGER DEFAULT 50
+)
+RETURNS TABLE(
+    tag_name TEXT,
+    usage_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        at.tag_name,
+        COUNT(*) as count
+    FROM activity.activity_tags at
+    INNER JOIN activity.activities a ON at.activity_id = a.id
+    WHERE a.status = 'published'
+    GROUP BY at.tag_name
+    ORDER BY count DESC, at.tag_name
+    LIMIT p_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- 7. RECOMMENDATION STORED PROCEDURES (Placeholders)
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- sp_get_recommended_activities: Get recommended activities for user
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_get_recommended_activities(
+    p_user_id UUID,
+    p_limit INTEGER DEFAULT 20
+)
+RETURNS TABLE(
+    activity_id UUID,
+    title VARCHAR,
+    scheduled_at TIMESTAMP,
+    recommendation_score DECIMAL
+) AS $$
+BEGIN
+    -- Simplified recommendation: upcoming activities in user's city
+    RETURN QUERY
+    SELECT
+        a.id,
+        a.title,
+        a.scheduled_at,
+        1.0 as score
+    FROM activity.activities a
+    WHERE
+        a.status = 'published'
+        AND a.scheduled_at > NOW()
+    ORDER BY a.scheduled_at
+    LIMIT p_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- sp_personalized_feed: Personalized activity feed
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION activity.sp_personalized_feed(
+    p_user_id UUID,
+    p_limit INTEGER DEFAULT 20
+)
+RETURNS TABLE(
+    activity_id UUID,
+    title VARCHAR,
+    scheduled_at TIMESTAMP
+) AS $$
+BEGIN
+    -- Simplified: same as activity feed for now
+    RETURN QUERY
+    SELECT
+        a.id,
+        a.title,
+        a.scheduled_at
+    FROM activity.activities a
+    WHERE
+        a.status = 'published'
+        AND a.scheduled_at > NOW()
+    ORDER BY a.scheduled_at
+    LIMIT p_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Aliases for compatibility
+CREATE OR REPLACE FUNCTION activity.sp_recommendations(p_user_id UUID, p_limit INTEGER DEFAULT 20)
+RETURNS TABLE(activity_id UUID, title VARCHAR, scheduled_at TIMESTAMP, recommendation_score DECIMAL)
+AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM activity.sp_get_recommended_activities(p_user_id, p_limit);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION activity.sp_nearby_activities(p_latitude DECIMAL, p_longitude DECIMAL, p_radius_km INTEGER DEFAULT 25, p_limit INTEGER DEFAULT 20)
+RETURNS TABLE(activity_id UUID, title VARCHAR, scheduled_at TIMESTAMP, distance_km DECIMAL, city VARCHAR, latitude DECIMAL, longitude DECIMAL)
+AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM activity.sp_get_nearby_activities(p_latitude, p_longitude, p_radius_km, p_limit);
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- COMPLETION
+-- =============================================================================
+
+COMMENT ON FUNCTION activity.sp_create_activity IS 'Create new activity with location and tags';
+COMMENT ON FUNCTION activity.sp_get_activity_by_id IS 'Get activity with all details including user-specific fields';
+COMMENT ON FUNCTION activity.sp_update_activity IS 'Update activity fields (organizer only)';
+COMMENT ON FUNCTION activity.sp_cancel_activity IS 'Cancel activity and notify participants';
+COMMENT ON FUNCTION activity.sp_delete_activity IS 'Delete activity (organizer only)';
+COMMENT ON FUNCTION activity.sp_search_activities IS 'Search activities with filters and location radius';
+COMMENT ON FUNCTION activity.sp_get_activity_feed IS 'Get paginated activity feed';
+COMMENT ON FUNCTION activity.sp_get_nearby_activities IS 'Get activities near specified location';
+
+-- Grant permissions
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA activity TO postgres;
+
+-- Completed
+SELECT 'Activity API Stored Procedures Created Successfully' as status;

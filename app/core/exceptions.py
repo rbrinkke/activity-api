@@ -91,28 +91,27 @@ def map_db_error(error: Exception) -> APIException:
 
     error_str = str(error)
 
-    # Handle PostgreSQL raised exceptions
-    if isinstance(error, asyncpg.exceptions.RaiseException):
-        if 'ERR_NOT_FOUND' in error_str or 'NOT_FOUND' in error_str:
-            return NotFoundException("Resource", {"database_error": error_str})
-        elif 'ERR_FORBIDDEN' in error_str or 'FORBIDDEN' in error_str:
-            return ForbiddenException(error_str)
-        elif 'ERR_BLOCKED' in error_str or 'BLOCKED' in error_str:
-            return ForbiddenException("User is blocked")
-        elif 'ERR_VALIDATION' in error_str or 'VALIDATION' in error_str:
-            return ValidationException(error_str)
-        elif 'ERR_CONFLICT' in error_str or 'CONFLICT' in error_str:
-            return ConflictException(error_str)
-        elif 'ERR_UNAUTHORIZED' in error_str or 'UNAUTHORIZED' in error_str:
-            return UnauthorizedException(error_str)
-        elif 'ERR_PREMIUM_REQUIRED' in error_str:
-            return ForbiddenException("Premium subscription required")
-        elif 'ERR_USER_NOT_FOUND' in error_str:
-            return NotFoundException("User")
-        elif 'ERR_ACTIVITY_NOT_FOUND' in error_str:
-            return NotFoundException("Activity")
-        elif 'ERR_CATEGORY_NOT_FOUND' in error_str:
-            return NotFoundException("Category")
+    # Check for custom error codes in the error message
+    if 'ERR_NOT_FOUND' in error_str or 'NOT_FOUND' in error_str:
+        return NotFoundException("Resource", {"database_error": error_str})
+    elif 'ERR_FORBIDDEN' in error_str or 'FORBIDDEN' in error_str:
+        return ForbiddenException(error_str)
+    elif 'ERR_BLOCKED' in error_str or 'BLOCKED' in error_str:
+        return ForbiddenException("User is blocked")
+    elif 'ERR_VALIDATION' in error_str or 'VALIDATION' in error_str:
+        return ValidationException(error_str)
+    elif 'ERR_CONFLICT' in error_str or 'CONFLICT' in error_str:
+        return ConflictException(error_str)
+    elif 'ERR_UNAUTHORIZED' in error_str or 'UNAUTHORIZED' in error_str:
+        return UnauthorizedException(error_str)
+    elif 'ERR_PREMIUM_REQUIRED' in error_str:
+        return ForbiddenException("Premium subscription required")
+    elif 'ERR_USER_NOT_FOUND' in error_str:
+        return NotFoundException("User")
+    elif 'ERR_ACTIVITY_NOT_FOUND' in error_str:
+        return NotFoundException("Activity")
+    elif 'ERR_CATEGORY_NOT_FOUND' in error_str:
+        return NotFoundException("Category")
 
     # Handle foreign key violations
     if isinstance(error, asyncpg.exceptions.ForeignKeyViolationError):
@@ -124,11 +123,15 @@ def map_db_error(error: Exception) -> APIException:
 
     # Default to internal server error
     logger.error("unhandled_database_error", error=error_str, error_type=type(error).__name__)
+
+    # Import settings to check DEBUG mode
+    from app.config import settings
+
     return APIException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         error_code="DATABASE_ERROR",
         message="An internal error occurred",
-        details={"error": error_str} if logger.isEnabledFor("DEBUG") else {}
+        details={"error": error_str} if settings.DEBUG else {}
     )
 
 

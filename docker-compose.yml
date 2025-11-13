@@ -1,54 +1,36 @@
 version: '3.8'
 
 services:
-  db:
-    image: postgis/postgis:15-3.3
-    container_name: activities-db
-    environment:
-      POSTGRES_USER: activities_user
-      POSTGRES_PASSWORD: activities_pass
-      POSTGRES_DB: activities_db
-      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./sqlschema:/docker-entrypoint-initdb.d/01-schema.sql:ro
-      - ./database/procedures:/docker-entrypoint-initdb.d/procedures:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U activities_user -d activities_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - activities-network
-
-  api:
+  activity-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: activities-api
+    container_name: activity-api
     ports:
-      - "8000:8000"
+      - "8007:8000"
     environment:
-      ENVIRONMENT: development
-      DATABASE_URL: postgresql://activities_user:activities_pass@db:5432/activities_db
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-change-in-production}
-      LOG_LEVEL: INFO
-    depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./app:/app/app
-      - ./database:/app/database
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - DATABASE_URL=postgresql://postgres:postgres_secure_password_change_in_prod@activity-postgres-db:5432/activitydb
+      - DB_POOL_MIN_SIZE=10
+      - DB_POOL_MAX_SIZE=50
+      - DB_COMMAND_TIMEOUT=60
+      - JWT_SECRET_KEY=dev-secret-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - API_V1_PREFIX=/api/v1
+      - PROJECT_NAME=Activities API
+      - VERSION=1.0.0
+      - HOST=0.0.0.0
+      - PORT=8000
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      - ALLOWED_ORIGINS=*
+      - ENABLE_RATE_LIMITING=false
+      - RATE_LIMIT_PER_MINUTE=60
     networks:
-      - activities-network
+      - activity-network
     restart: unless-stopped
 
-volumes:
-  postgres_data:
-    driver: local
-
 networks:
-  activities-network:
-    driver: bridge
+  activity-network:
+    external: true

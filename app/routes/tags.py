@@ -25,9 +25,9 @@ def get_tag_service() -> TagService:
     description="Get most popular activity tags for autocomplete/suggestions. Public endpoint."
 )
 async def get_popular_tags(
+    service: Annotated[TagService, Depends(get_tag_service)],
     limit: int = Query(50, ge=1, le=100, description="Maximum number of tags to return"),
-    prefix: Optional[str] = Query(None, max_length=100, description="Filter tags starting with prefix"),
-    service: Annotated[TagService, Depends(get_tag_service)] = Depends()
+    prefix: Optional[str] = Query(None, max_length=100, description="Filter tags starting with prefix")
 ):
     """Get popular tags for autocomplete."""
     tags = await service.get_popular_tags(limit=limit, prefix=prefix)
